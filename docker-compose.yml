@@ -1,0 +1,38 @@
+version: "3.8"
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: demanda
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  backend:
+    build: ./backend
+    ports:
+      - "3001:3001"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: demanda
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      LAMBDA_URL: http://lambda-mock:3002
+    depends_on:
+      - postgres
+
+  lambda-mock:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ./lambda:/app
+    command: node index.js
+    ports:
+      - "3002:3002"
+
+volumes:
+  pgdata:
