@@ -45,3 +45,4 @@ terraform apply -var="db_password=TU_PASSWORD"
 - `AWS_ACCESS_KEY_ID`
 - `AWS_SECRET_ACCESS_KEY`
 - `DB_PASSWORD`
+# Deploy Sun Mar 29 12:02:46 AM UTC 2026
