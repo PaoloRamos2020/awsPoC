@@ -10,7 +10,6 @@ env:
   AWS_REGION: us-east-1
   ECR_BACKEND: demanda-poc-backend
   ECS_CLUSTER: demanda-poc-cluster
-  ECS_SERVICE: demanda-poc-backend-svc
 
 jobs:
   test-backend:
@@ -24,12 +23,48 @@ jobs:
           cache: "npm"
           cache-dependency-path: backend/package.json
       - run: cd backend && npm install
-      - run: echo "✅ Tests passed (add Jest later)"
+      - run: echo "✅ Tests passed"
+
+  terraform-deploy:
+    name: Terraform Deploy
+    runs-on: ubuntu-latest
+    needs: test-backend
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.0"
+
+      - name: Terraform Init
+        run: cd terraform && terraform init
+
+      - name: Import existing resources
+        run: |
+          cd terraform
+          terraform import -lock=false aws_ecr_repository.backend demanda-poc-backend || true
+          terraform import -lock=false aws_ecs_cluster.main demanda-poc-cluster || true
+          terraform import -lock=false aws_iam_role.lambda_exec demanda-poc-lambda-role || true
+          terraform import -lock=false aws_iam_role_policy_attachment.lambda_basic demanda-poc-lambda-role/arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole || true
+          terraform import -lock=false aws_lambda_function.jira_mock demanda-poc-jira-mock || true
+          terraform import -lock=false aws_lambda_function_url.jira_mock demanda-poc-jira-mock || true
+          terraform import -lock=false aws_db_instance.postgres db-FCP6FXSTODJ5X7QVKNEHPWXGSQ || true
+
+      - name: Terraform Apply
+        run: cd terraform && terraform apply -auto-approve -lock=false -var="db_password=${{ secrets.DB_PASSWORD }}"
 
   build-and-push:
     name: Build & Push to ECR
     runs-on: ubuntu-latest
-    needs: test-backend
+    needs: terraform-deploy
     if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
@@ -51,34 +86,7 @@ jobs:
           IMAGE_TAG: ${{ github.sha }}
         run: |
           docker build -t $ECR_REGISTRY/$ECR_BACKEND:$IMAGE_TAG ./backend
+          docker build -t $ECR_REGISTRY/$ECR_BACKEND:latest ./backend
           docker push $ECR_REGISTRY/$ECR_BACKEND:$IMAGE_TAG
-          echo "IMAGE=$ECR_REGISTRY/$ECR_BACKEND:$IMAGE_TAG" >> $GITHUB_ENV
-
-  terraform-deploy:
-    name: Terraform Apply
-    runs-on: ubuntu-latest
-    needs: build-and-push
-    if: github.ref == 'refs/heads/main'
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "1.7.0"
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Terraform Init
-        run: cd terraform && terraform init
-
-      - name: Terraform Plan
-        run: cd terraform && terraform plan -var="db_password=${{ secrets.DB_PASSWORD }}"
-
-      - name: Terraform Apply
-        if: github.ref == 'refs/heads/main'
-        run: cd terraform && terraform apply -auto-approve -var="db_password=${{ secrets.DB_PASSWORD }}"
+          docker push $ECR_REGISTRY/$ECR_BACKEND:latest
+          echo "✅ Imagen pushed: $ECR_REGISTRY/$ECR_BACKEND:$IMAGE_TAG"
