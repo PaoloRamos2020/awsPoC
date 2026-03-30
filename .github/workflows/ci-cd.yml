@@ -117,9 +117,9 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: terraform-artifacts
-      - name: Move artifacts to correct paths
-        run: |
-          ls -la && ls -la terraform/ && ls -la lambda/
+          path: .
+      - name: Show artifact structure
+        run: find . -name tfplan -o -name lambda.zip
 
       - name: Terraform Init
         working-directory: terraform
