@@ -47,3 +47,4 @@ terraform apply -var="db_password=TU_PASSWORD"
 - `DB_PASSWORD`
 # Deploy Sun Mar 29 12:02:46 AM UTC 2026
 # Deploy Sun Mar 29 12:03:13 AM UTC 2026
+# Dev environment
