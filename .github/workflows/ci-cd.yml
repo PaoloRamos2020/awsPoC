@@ -119,8 +119,8 @@ jobs:
           name: terraform-artifacts
       - name: Move artifacts to correct paths
         run: |
-          mv tfplan terraform/tfplan
-          mv lambda.zip lambda/lambda.zip
+          ls -la && ls -la terraform/ && ls -la lambda/
+
       - name: Terraform Init
         working-directory: terraform
         run: terraform init
