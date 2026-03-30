@@ -15,3 +15,9 @@ variable "db_password" {
   type        = string
   sensitive   = true
 }
+
+variable "environment" {
+  description = "Environment prefix (dev, qa, prod)"
+  type        = string
+  default     = "prod"
+}
