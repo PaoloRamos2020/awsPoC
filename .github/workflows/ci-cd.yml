@@ -79,7 +79,7 @@ jobs:
         run: terraform fmt -check
       - name: Terraform Init
         working-directory: terraform
-        run: terraform init
+        run: terraform init -backend-config="key=${{ needs.set-environment.outputs.prefix }}/terraform.tfstate"
       - name: Terraform Validate
         working-directory: terraform
         run: terraform validate
@@ -123,7 +123,7 @@ jobs:
 
       - name: Terraform Init
         working-directory: terraform
-        run: terraform init
+        run: terraform init -backend-config="key=${{ needs.set-environment.outputs.prefix }}/terraform.tfstate"
       - name: Terraform Apply
         working-directory: terraform
         env:
