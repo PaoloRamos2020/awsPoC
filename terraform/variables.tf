@@ -1,17 +1,17 @@
 variable "aws_region" {
-  description = "AWS Region"
+  description = "AWS region"
   type        = string
   default     = "us-east-1"
 }
 
-variable "environment" {
-  description = "Ambiente de despliegue"
+variable "project_name" {
+  description = "Project name prefix"
   type        = string
-  default     = "dev"
+  default     = "demanda-poc"
 }
 
 variable "db_password" {
-  description = "Password de la instancia RDS PostgreSQL"
+  description = "RDS PostgreSQL password"
   type        = string
   sensitive   = true
 }

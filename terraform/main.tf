@@ -11,66 +11,44 @@ provider "aws" {
   region = var.aws_region
 }
 
-locals {
-  tags = {
-    Project     = "demanda-poc"
-    Environment = var.environment
-    ManagedBy   = "terraform"
-  }
-}
-
-# ECR Repository para el backend
-resource "aws_ecr_repository" "backend" {
-  name                 = "demanda-poc-backend"
-  image_tag_mutability = "MUTABLE"
-  force_delete         = true
-  tags                 = local.tags
-}
-
-# ECS Cluster
-resource "aws_ecs_cluster" "main" {
-  name = "demanda-poc-cluster"
-  tags = local.tags
-}
-
-# RDS PostgreSQL
-resource "aws_db_instance" "postgres" {
-  identifier           = "demanda-poc-db"
-  engine               = "postgres"
-  engine_version       = "15"
-  instance_class       = "db.t3.micro"
-  allocated_storage    = 20
-  db_name              = "demanda"
-  username             = "postgres"
-  password             = var.db_password
-  skip_final_snapshot  = true
-  publicly_accessible  = true
-  tags                 = local.tags
-}
-
-# Lambda Mock JIRA
-data "archive_file" "lambda_zip" {
-  type        = "zip"
-  source_dir  = "${path.module}/../lambda"
-  output_path = "${path.module}/lambda.zip"
+data "aws_security_group" "default" {
+  id = "sg-0a9c7c850ff4e7796"
 }
 
 resource "aws_lambda_function" "jira_mock" {
-  filename         = data.archive_file.lambda_zip.output_path
-  function_name    = "demanda-poc-jira-mock"
-  role             = aws_iam_role.lambda_exec.arn
+  filename         = "../lambda/lambda.zip"
+  function_name    = "${var.project_name}-jira-mock"
+  role             = aws_iam_role.lambda_role.arn
   handler          = "index.handler"
   runtime          = "nodejs20.x"
-  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+  source_code_hash = filebase64sha256("../lambda/lambda.zip")
   timeout          = 10
+
   environment {
-    variables = { ENVIRONMENT = var.environment }
+    variables = {
+      ENVIRONMENT  = "dev"
+      PROJECT_NAME = var.project_name
+    }
   }
-  tags = local.tags
 }
 
-resource "aws_iam_role" "lambda_exec" {
-  name = "demanda-poc-lambda-role"
+resource "aws_lambda_function_url" "jira_mock_url" {
+  function_name      = aws_lambda_function.jira_mock.function_name
+  authorization_type = "NONE"
+
+  cors {
+    allow_credentials = false
+    allow_headers     = []
+    allow_methods     = ["GET", "POST"]
+    allow_origins     = ["*"]
+    expose_headers    = []
+    max_age           = 0
+  }
+}
+
+resource "aws_iam_role" "lambda_role" {
+  name = "${var.project_name}-lambda-role"
+
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -82,15 +60,32 @@ resource "aws_iam_role" "lambda_exec" {
 }
 
 resource "aws_iam_role_policy_attachment" "lambda_basic" {
-  role       = aws_iam_role.lambda_exec.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+  role       = aws_iam_role.lambda_role.name
 }
 
-resource "aws_lambda_function_url" "jira_mock" {
-  function_name      = aws_lambda_function.jira_mock.function_name
-  authorization_type = "NONE"
-  cors {
-    allow_origins = ["*"]
-    allow_methods = ["GET", "POST"]
-  }
+resource "aws_ecr_repository" "backend" {
+  name                 = "${var.project_name}-backend"
+  image_tag_mutability = "MUTABLE"
+  force_delete         = true
+}
+
+resource "aws_ecs_cluster" "main" {
+  name = "${var.project_name}-cluster"
+}
+
+resource "aws_db_instance" "postgres" {
+  identifier        = "${var.project_name}-db"
+  engine            = "postgres"
+  engine_version    = "15.14"
+  instance_class    = "db.t3.micro"
+  allocated_storage = 20
+
+  db_name  = "demanda"
+  username = "postgres"
+  password = var.db_password
+
+  skip_final_snapshot    = true
+  publicly_accessible    = true
+  vpc_security_group_ids = [data.aws_security_group.default.id]
 }
