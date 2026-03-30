@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 
-const LAMBDA_URL = process.env.REACT_APP_LAMBDA_URL || 'https://u2k7tion5p6l53qu7flvdagcg40ghezc.lambda-url.us-east-1.on.aws/';
+const LAMBDA_URL = process.env.REACT_APP_LAMBDA_URL || 'https://3yaj0v3c10.execute-api.us-east-1.amazonaws.com/';
 const API_URL = process.env.REACT_APP_API_URL || '';
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
@@ -219,7 +219,7 @@ export default function App() {
               </div>
               <div style={{ marginTop: 32, display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12 }}>
                 {[
-                  ['Lambda URL', 'https://u2k7tion5p6l53qu7flvdagcg40ghezc.lambda-url.us-east-1.on.aws/'],
+                  ['Lambda URL', 'https://3yaj0v3c10.execute-api.us-east-1.amazonaws.com/'],
                   ['ECR', '145292398795.dkr.ecr.us-east-1.amazonaws.com/demanda-poc-backend'],
                   ['RDS Endpoint', 'demanda-poc-db.cmhkme82orop.us-east-1.rds.amazonaws.com:5432'],
                   ['ECS Cluster', 'demanda-poc-cluster — us-east-1'],

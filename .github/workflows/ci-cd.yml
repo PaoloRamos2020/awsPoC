@@ -107,7 +107,7 @@ jobs:
       - name: Build frontend
         working-directory: frontend
         env:
-          REACT_APP_LAMBDA_URL: https://u2k7tion5p6l53qu7flvdagcg40ghezc.lambda-url.us-east-1.on.aws/
+          REACT_APP_LAMBDA_URL: https://3yaj0v3c10.execute-api.us-east-1.amazonaws.com/
         run: |
           npm install
           npm run build
