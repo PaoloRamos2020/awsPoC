@@ -88,11 +88,13 @@ jobs:
         env:
           TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
         run: terraform plan -out=tfplan
-      - name: Upload plan artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: tfplan
-          path: terraform/tfplan
+          name: terraform-artifacts
+          path: |
+            terraform/tfplan
+            lambda/lambda.zip
           retention-days: 1
 
   terraform-apply:
@@ -111,16 +113,17 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.6.6
-      - name: Create lambda zip
-        run: cd lambda && zip lambda.zip index.js
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-artifacts
+      - name: Move artifacts to correct paths
+        run: |
+          mv tfplan terraform/tfplan
+          mv lambda.zip lambda/lambda.zip
       - name: Terraform Init
         working-directory: terraform
         run: terraform init
-      - name: Download plan artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: tfplan
-          path: terraform/
       - name: Terraform Apply
         working-directory: terraform
         env:
