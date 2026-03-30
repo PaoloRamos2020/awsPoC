@@ -61,7 +61,7 @@ export default function App() {
       {/* Header */}
       <div style={{ background: '#1e3a5f', color: 'white', padding: '16px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div>
-          <div style={{ fontSize: 11, opacity: 0.7, letterSpacing: 2, textTransform: 'uppercase' }}>Credicorp Bank — T&I</div>
+          <div style={{ fontSize: 11, opacity: 0.7, letterSpacing: 2, textTransform: 'uppercase' }}>Banana Bank 🍌 — T&I</div>
           <div style={{ fontSize: 20, fontWeight: 700 }}>Gestión de la Demanda PoC</div>
         </div>
         <div style={{ fontSize: 12, opacity: 0.7 }}>
