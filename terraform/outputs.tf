@@ -9,8 +9,8 @@ output "ecr_repository_url" {
 }
 
 output "rds_endpoint" {
-  description = "RDS endpoint (solo en dev, compartido entre ambientes)"
-  value       = var.environment == "dev" ? aws_db_instance.postgres[0].endpoint : "uses demanda-shared-db (see dev output)"
+  description = "RDS endpoint (compartido entre ambientes)"
+  value       = try(aws_db_instance.postgres[0].endpoint, "uses demanda-shared-db (see dev output)")
 }
 
 output "rds_database_name" {
