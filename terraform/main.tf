@@ -225,3 +225,8 @@ resource "aws_cloudfront_distribution" "frontend" {
 
   tags = local.tags
 }
+
+import {
+  to = aws_s3_bucket.frontend
+  id = "demanda-dev-frontend-145292398795"
+}
