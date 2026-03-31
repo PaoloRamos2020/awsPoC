@@ -95,7 +95,7 @@ resource "aws_ecr_repository" "backend" {
   tags                 = local.tags
 }
 
-# ─── ECS ─────────────────────────────────────────────────────────────────────
+# ─── ECS CLUSTER ─────────────────────────────────────────────────────────────
 
 resource "aws_ecs_cluster" "main" {
   name = "${local.prefix}-cluster"
@@ -103,7 +103,6 @@ resource "aws_ecs_cluster" "main" {
 }
 
 # ─── RDS POSTGRESQL (solo en dev, compartida entre ambientes) ─────────────────
-# Una instancia RDS con 3 databases: demanda_dev, demanda_qa, demanda_prod
 
 data "aws_security_group" "default" {
   id = "sg-0a9c7c850ff4e7796"
@@ -220,6 +219,132 @@ resource "aws_cloudfront_distribution" "frontend" {
 
   viewer_certificate {
     cloudfront_default_certificate = true
+  }
+
+  tags = local.tags
+}
+
+# ─── ECS FARGATE — NETWORKING ─────────────────────────────────────────────────
+
+data "aws_vpc" "default" {
+  default = true
+}
+
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
+}
+
+resource "aws_security_group" "ecs_backend" {
+  name        = "${local.prefix}-ecs-backend-sg"
+  description = "Allow HTTP inbound for ECS backend"
+  vpc_id      = data.aws_vpc.default.id
+
+  ingress {
+    from_port   = 3001
+    to_port     = 3001
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = local.tags
+}
+
+# ─── ECS FARGATE — IAM ROLE ───────────────────────────────────────────────────
+
+resource "aws_iam_role" "ecs_task_execution" {
+  name = "${local.prefix}-ecs-execution-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "ecs-tasks.amazonaws.com" }
+    }]
+  })
+
+  tags = local.tags
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_execution" {
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+  role       = aws_iam_role.ecs_task_execution.name
+}
+
+resource "aws_cloudwatch_log_group" "ecs_backend" {
+  name              = "/ecs/${local.prefix}-backend"
+  retention_in_days = var.environment == "prod" ? 30 : 7
+  tags              = local.tags
+}
+
+# ─── ECS FARGATE — TASK DEFINITION ───────────────────────────────────────────
+
+resource "aws_ecs_task_definition" "backend" {
+  family                   = "${local.prefix}-backend"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 256
+  memory                   = 512
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+
+  container_definitions = jsonencode([{
+    name  = "backend"
+    image = "${aws_ecr_repository.backend.repository_url}:latest"
+
+    portMappings = [{
+      containerPort = 3001
+      protocol      = "tcp"
+    }]
+
+    environment = [
+      { name = "PORT",        value = "3001" },
+      { name = "ENVIRONMENT", value = var.environment },
+      { name = "LAMBDA_URL",  value = aws_lambda_function_url.jira_mock_url.function_url },
+      { name = "DB_HOST",     value = var.environment == "dev" ? aws_db_instance.postgres[0].address : var.db_host },
+      { name = "DB_PORT",     value = "5432" },
+      { name = "DB_NAME",     value = "demanda_${var.environment}" },
+      { name = "DB_USER",     value = "postgres" },
+      { name = "DB_PASSWORD", value = var.db_password }
+    ]
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = "/ecs/${local.prefix}-backend"
+        "awslogs-region"        = var.aws_region
+        "awslogs-stream-prefix" = "ecs"
+      }
+    }
+
+    essential = true
+  }])
+
+  tags = local.tags
+}
+
+# ─── ECS FARGATE — SERVICE ────────────────────────────────────────────────────
+
+resource "aws_ecs_service" "backend" {
+  name            = "${local.prefix}-backend-service"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.backend.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = data.aws_subnets.default.ids
+    security_groups  = [aws_security_group.ecs_backend.id]
+    assign_public_ip = true
   }
 
   tags = local.tags
