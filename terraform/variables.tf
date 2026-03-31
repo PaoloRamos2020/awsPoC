@@ -20,7 +20,8 @@ variable "environment" {
 }
 
 variable "db_password" {
-  description = "RDS PostgreSQL password"
+  description = "RDS PostgreSQL password (solo requerido en dev)"
   type        = string
   sensitive   = true
+  default     = ""
 }
