@@ -255,7 +255,7 @@ jobs:
           npm run build
       - name: Deploy to S3
         run: |
-          aws s3 sync frontend/dist/ s3://${{ needs.set-environment.outputs.s3_bucket }} --delete
+          aws s3 sync frontend/build/ s3://${{ needs.set-environment.outputs.s3_bucket }} --delete
           echo "Frontend desplegado en s3://${{ needs.set-environment.outputs.s3_bucket }}"
       - name: Invalidate CloudFront
         run: |
