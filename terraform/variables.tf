@@ -25,3 +25,9 @@ variable "db_password" {
   sensitive   = true
   default     = ""
 }
+
+variable "db_host" {
+  description = "RDS host — requerido en qa y prod (referencian el RDS compartido de dev)"
+  type        = string
+  default     = ""
+}
