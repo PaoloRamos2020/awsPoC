@@ -9,9 +9,13 @@ output "ecr_repository_url" {
 }
 
 output "rds_endpoint" {
-  description = "RDS endpoint"
-  value       = aws_db_instance.postgres.endpoint
-  sensitive   = true
+  description = "RDS endpoint (compartido entre ambientes)"
+  value       = try(aws_db_instance.postgres[0].endpoint, "uses demanda-shared-db (see dev output)")
+}
+
+output "rds_database_name" {
+  description = "Nombre de la base de datos para este ambiente"
+  value       = "demanda_${var.environment}"
 }
 
 output "ecs_cluster_name" {
