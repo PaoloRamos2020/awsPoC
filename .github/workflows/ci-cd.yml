@@ -2,7 +2,9 @@ name: CI/CD — Gestión de la Demanda PoC
 
 on:
   push:
-    branches: [main, release, develop]
+    branches: [develop, release/**, main]
+  pull_request:
+    branches: [develop, main]
 
 permissions:
   id-token: write
@@ -10,38 +12,36 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
-  ECR_REPOSITORY: demanda-poc-backend
+  ECR_ACCOUNT: 145292398795
   AWS_ROLE_ARN: arn:aws:iam::145292398795:role/demanda-poc-github-actions-role
 
 jobs:
+
   set-environment:
     name: Set Environment
     runs-on: ubuntu-latest
     outputs:
-      environment: ${{ steps.set-env.outputs.environment }}
-      prefix: ${{ steps.set-env.outputs.prefix }}
-      s3_bucket: ${{ steps.set-env.outputs.s3_bucket }}
-      cf_distribution: ${{ steps.set-env.outputs.cf_distribution }}
+      environment: ${{ steps.env.outputs.environment }}
+      prefix:      ${{ steps.env.outputs.prefix }}
+      s3_bucket:   ${{ steps.env.outputs.s3_bucket }}
+      db_name:     ${{ steps.env.outputs.db_name }}
     steps:
-      - name: Determine environment
-        id: set-env
+      - name: Determine environment from branch
+        id: env
         run: |
-          if [ "${{ github.ref_name }}" = "main" ]; then
-            echo "environment=production" >> $GITHUB_OUTPUT
-            echo "prefix=prod" >> $GITHUB_OUTPUT
-            echo "s3_bucket=demanda-poc-frontend-145292398795" >> $GITHUB_OUTPUT
-            echo "cf_distribution=E34QI9GBHOBS0Z" >> $GITHUB_OUTPUT
-          elif [ "${{ github.ref_name }}" = "release" ]; then
-            echo "environment=qa" >> $GITHUB_OUTPUT
-            echo "prefix=qa" >> $GITHUB_OUTPUT
-            echo "s3_bucket=demanda-qa-frontend-145292398795" >> $GITHUB_OUTPUT
-            echo "cf_distribution=QA_CF_ID" >> $GITHUB_OUTPUT
+          BRANCH="${{ github.ref_name }}"
+          if [[ "$BRANCH" == "main" ]]; then
+            ENV="prod"
+          elif [[ "$BRANCH" == release/* ]]; then
+            ENV="qa"
           else
-            echo "environment=development" >> $GITHUB_OUTPUT
-            echo "prefix=dev" >> $GITHUB_OUTPUT
-            echo "s3_bucket=demanda-dev-frontend-145292398795" >> $GITHUB_OUTPUT
-            echo "cf_distribution=DEV_CF_ID" >> $GITHUB_OUTPUT
+            ENV="dev"
           fi
+          echo "environment=$ENV"                              >> $GITHUB_OUTPUT
+          echo "prefix=demanda-$ENV"                          >> $GITHUB_OUTPUT
+          echo "s3_bucket=demanda-$ENV-frontend-145292398795" >> $GITHUB_OUTPUT
+          echo "db_name=demanda_$ENV"                         >> $GITHUB_OUTPUT
+          echo "Ambiente detectado: $ENV (rama: $BRANCH)"
 
   test-backend:
     name: Test Backend
@@ -61,7 +61,7 @@ jobs:
   security-scan:
     name: Security Scan (Trivy)
     runs-on: ubuntu-latest
-    needs: test-backend
+    needs: [set-environment, test-backend]
     steps:
       - uses: actions/checkout@v4
       - name: Configure AWS credentials (OIDC)
@@ -75,19 +75,20 @@ jobs:
       - name: Build image for scanning
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        run: docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:scan ./backend
+          PREFIX: ${{ needs.set-environment.outputs.prefix }}
+        run: docker build -t $ECR_REGISTRY/$PREFIX-backend:scan ./backend
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: '${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:scan'
+          image-ref: '${{ env.ECR_ACCOUNT }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ needs.set-environment.outputs.prefix }}-backend:scan'
           format: 'table'
           exit-code: '0'
           severity: 'CRITICAL,HIGH'
 
   terraform-plan:
-    name: Terraform Plan
+    name: Terraform Plan (${{ needs.set-environment.outputs.environment }})
     runs-on: ubuntu-latest
-    needs: [test-backend, set-environment]
+    needs: [set-environment, test-backend]
     steps:
       - uses: actions/checkout@v4
       - name: Configure AWS credentials (OIDC)
@@ -95,8 +96,7 @@ jobs:
         with:
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.6.6
       - name: Create lambda zip
@@ -106,7 +106,9 @@ jobs:
         run: terraform fmt -check
       - name: Terraform Init
         working-directory: terraform
-        run: terraform init -backend-config="key=${{ needs.set-environment.outputs.prefix }}/terraform.tfstate"
+        run: |
+          terraform init \
+            -backend-config="key=${{ needs.set-environment.outputs.environment }}/terraform.tfstate"
       - name: Terraform Validate
         working-directory: terraform
         run: terraform validate
@@ -114,22 +116,22 @@ jobs:
         working-directory: terraform
         env:
           TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
-          TF_VAR_environment: ${{ needs.set-environment.outputs.prefix }}
+          TF_VAR_environment: ${{ needs.set-environment.outputs.environment }}
         run: terraform plan -out=tfplan
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: terraform-artifacts
+          name: terraform-artifacts-${{ needs.set-environment.outputs.environment }}
           path: |
             terraform/tfplan
             lambda/lambda.zip
           retention-days: 1
 
   terraform-apply:
-    name: Terraform Apply
+    name: Terraform Apply (${{ needs.set-environment.outputs.environment }})
     runs-on: ubuntu-latest
-    needs: [terraform-plan, security-scan, set-environment]
-    environment: ${{ needs.set-environment.outputs.environment }}
+    needs: [set-environment, terraform-plan, security-scan]
+    if: needs.set-environment.outputs.environment != 'prod'
     steps:
       - uses: actions/checkout@v4
       - name: Configure AWS credentials (OIDC)
@@ -137,31 +139,64 @@ jobs:
         with:
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.6.6
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          name: terraform-artifacts
+          name: terraform-artifacts-${{ needs.set-environment.outputs.environment }}
           path: .
-      - name: Show artifact structure
-        run: find . -name tfplan -o -name lambda.zip
       - name: Terraform Init
         working-directory: terraform
-        run: terraform init -backend-config="key=${{ needs.set-environment.outputs.prefix }}/terraform.tfstate"
+        run: |
+          terraform init \
+            -backend-config="key=${{ needs.set-environment.outputs.environment }}/terraform.tfstate"
       - name: Terraform Apply
         working-directory: terraform
         env:
           TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
-          TF_VAR_environment: ${{ needs.set-environment.outputs.prefix }}
+          TF_VAR_environment: ${{ needs.set-environment.outputs.environment }}
+        run: terraform apply -auto-approve tfplan
+
+  terraform-apply-prod:
+    name: Terraform Apply (prod) 🔒
+    runs-on: ubuntu-latest
+    needs: [set-environment, terraform-plan, security-scan]
+    if: needs.set-environment.outputs.environment == 'prod'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-artifacts-prod
+          path: .
+      - name: Terraform Init
+        working-directory: terraform
+        run: |
+          terraform init \
+            -backend-config="key=prod/terraform.tfstate"
+      - name: Terraform Apply
+        working-directory: terraform
+        env:
+          TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+          TF_VAR_environment: prod
         run: terraform apply -auto-approve tfplan
 
   build-push-ecr:
-    name: Build & Push to ECR
+    name: Build & Push ECR (${{ needs.set-environment.outputs.environment }})
     runs-on: ubuntu-latest
-    needs: [terraform-apply, set-environment]
+    needs: [set-environment, terraform-apply, terraform-apply-prod]
+    if: always() && (needs.terraform-apply.result == 'success' || needs.terraform-apply-prod.result == 'success')
     steps:
       - uses: actions/checkout@v4
       - name: Configure AWS credentials (OIDC)
@@ -175,18 +210,21 @@ jobs:
       - name: Build and push
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
-          ENV_PREFIX: ${{ needs.set-environment.outputs.prefix }}
+          PREFIX:       ${{ needs.set-environment.outputs.prefix }}
+          IMAGE_TAG:    ${{ github.sha }}
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$ENV_PREFIX-$IMAGE_TAG ./backend
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$ENV_PREFIX-$IMAGE_TAG
-          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$ENV_PREFIX-$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:$ENV_PREFIX-latest
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$ENV_PREFIX-latest
+          docker build -t $ECR_REGISTRY/$PREFIX-backend:$IMAGE_TAG ./backend
+          docker push $ECR_REGISTRY/$PREFIX-backend:$IMAGE_TAG
+          docker tag  $ECR_REGISTRY/$PREFIX-backend:$IMAGE_TAG \
+                      $ECR_REGISTRY/$PREFIX-backend:latest
+          docker push $ECR_REGISTRY/$PREFIX-backend:latest
+          echo "Imagen publicada: $ECR_REGISTRY/$PREFIX-backend:$IMAGE_TAG"
 
   deploy-frontend:
-    name: Deploy Frontend
+    name: Deploy Frontend (${{ needs.set-environment.outputs.environment }})
     runs-on: ubuntu-latest
-    needs: [terraform-apply, set-environment]
+    needs: [set-environment, terraform-apply, terraform-apply-prod]
+    if: always() && (needs.terraform-apply.result == 'success' || needs.terraform-apply-prod.result == 'success')
     steps:
       - uses: actions/checkout@v4
       - name: Configure AWS credentials (OIDC)
@@ -200,13 +238,20 @@ jobs:
       - name: Build frontend
         working-directory: frontend
         env:
-          REACT_APP_LAMBDA_URL: https://3yaj0v3c10.execute-api.us-east-1.amazonaws.com/
-          REACT_APP_ENVIRONMENT: ${{ needs.set-environment.outputs.prefix }}
+          REACT_APP_API_URL: ${{ secrets.BACKEND_URL }}
+          REACT_APP_ENV:     ${{ needs.set-environment.outputs.environment }}
+          REACT_APP_DB_NAME: ${{ needs.set-environment.outputs.db_name }}
         run: |
           npm install
           npm run build
       - name: Deploy to S3
-        run: aws s3 sync frontend/build/ s3://${{ needs.set-environment.outputs.s3_bucket }} --delete
+        run: |
+          aws s3 sync frontend/build/ s3://${{ needs.set-environment.outputs.s3_bucket }} --delete
+          echo "Frontend desplegado en s3://${{ needs.set-environment.outputs.s3_bucket }}"
       - name: Invalidate CloudFront
-        if: ${{ needs.set-environment.outputs.cf_distribution != 'DEV_CF_ID' && needs.set-environment.outputs.cf_distribution != 'QA_CF_ID' }}
-        run: aws cloudfront create-invalidation --distribution-id ${{ needs.set-environment.outputs.cf_distribution }} --paths "/*"
+        run: |
+          CF_ID=$(aws cloudfront list-distributions \
+            --query "DistributionList.Items[?Comment=='Demanda ${{ needs.set-environment.outputs.environment }} Frontend'].Id" \
+            --output text)
+          aws cloudfront create-invalidation --distribution-id $CF_ID --paths "/*"
+          echo "Cache invalidado en CloudFront: $CF_ID"

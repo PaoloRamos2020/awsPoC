@@ -7,17 +7,21 @@ variable "aws_region" {
 variable "project_name" {
   description = "Project name prefix"
   type        = string
-  default     = "demanda-poc"
-}
-
-variable "db_password" {
-  description = "RDS PostgreSQL password"
-  type        = string
-  sensitive   = true
+  default     = "demanda"
 }
 
 variable "environment" {
-  description = "Environment prefix (dev, qa, prod)"
+  description = "Ambiente de despliegue: dev | qa | prod"
   type        = string
-  default     = "prod"
+  validation {
+    condition     = contains(["dev", "qa", "prod"], var.environment)
+    error_message = "El ambiente debe ser dev, qa o prod."
+  }
+}
+
+variable "db_password" {
+  description = "RDS PostgreSQL password (solo requerido en dev)"
+  type        = string
+  sensitive   = true
+  default     = ""
 }
