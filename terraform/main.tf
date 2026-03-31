@@ -9,6 +9,10 @@ terraform {
   backend "s3" {
     bucket = "demanda-poc-tfstate-145292398795"
     region = "us-east-1"
+    # key se pasa dinámicamente desde el pipeline:
+    # -backend-config="key=dev/terraform.tfstate"
+    # -backend-config="key=qa/terraform.tfstate"
+    # -backend-config="key=prod/terraform.tfstate"
   }
 }
 
@@ -102,28 +106,25 @@ resource "aws_ecs_cluster" "main" {
   tags = local.tags
 }
 
-# ─── RDS POSTGRESQL (solo en dev, compartida entre ambientes) ─────────────────
-# Una instancia RDS con 3 databases: demanda_dev, demanda_qa, demanda_prod
+# ─── RDS POSTGRESQL ──────────────────────────────────────────────────────────
 
 data "aws_security_group" "default" {
   id = "sg-0a9c7c850ff4e7796"
 }
 
 resource "aws_db_instance" "postgres" {
-  count = var.environment == "dev" ? 1 : 0
-
-  identifier        = "${var.project_name}-shared-db"
+  identifier        = "${local.prefix}-db"
   engine            = "postgres"
   engine_version    = "15.14"
   instance_class    = "db.t3.micro"
   allocated_storage = 20
 
-  db_name  = "demanda_dev"
+  db_name  = "demanda"
   username = "postgres"
   password = var.db_password
 
-  skip_final_snapshot    = true
-  deletion_protection    = false
+  skip_final_snapshot    = var.environment != "prod"
+  deletion_protection    = var.environment == "prod"
   publicly_accessible    = true
   vpc_security_group_ids = [data.aws_security_group.default.id]
 
@@ -223,4 +224,10 @@ resource "aws_cloudfront_distribution" "frontend" {
   }
 
   tags = local.tags
+}
+
+
+import {
+  to = aws_s3_bucket.frontend
+  id = "demanda-qa-frontend-145292398795"
 }
