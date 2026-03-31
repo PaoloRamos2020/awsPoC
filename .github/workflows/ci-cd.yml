@@ -5,6 +5,30 @@ on:
     branches: [develop, release/**, main]
   pull_request:
     branches: [develop, main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Ambiente a desplegar'
+        required: true
+        type: choice
+        options: [dev, qa, prod]
+        default: dev
+      target:
+        description: 'Qué desplegar'
+        required: true
+        type: choice
+        options: [both, backend, frontend]
+        default: both
+      apply_infra:
+        description: 'Aplicar cambios de Terraform'
+        required: true
+        type: boolean
+        default: false
+      image_tag:
+        description: 'SHA del commit a desplegar (vacío = último commit)'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   id-token: write
@@ -17,6 +41,9 @@ env:
 
 jobs:
 
+  # ──────────────────────────────────────────────────────────────
+  # JOB 1: Resolver ambiente y modo de ejecución
+  # ──────────────────────────────────────────────────────────────
   set-environment:
     name: Set Environment
     runs-on: ubuntu-latest
@@ -25,28 +52,65 @@ jobs:
       prefix:      ${{ steps.env.outputs.prefix }}
       s3_bucket:   ${{ steps.env.outputs.s3_bucket }}
       db_name:     ${{ steps.env.outputs.db_name }}
+      is_redeploy: ${{ steps.env.outputs.is_redeploy }}
+      target:      ${{ steps.env.outputs.target }}
+      apply_infra: ${{ steps.env.outputs.apply_infra }}
+      image_tag:   ${{ steps.env.outputs.image_tag }}
     steps:
-      - name: Determine environment from branch
+      - name: Determine environment and execution mode
         id: env
         run: |
-          BRANCH="${{ github.ref_name }}"
-          if [[ "$BRANCH" == "main" ]]; then
-            ENV="prod"
-          elif [[ "$BRANCH" == release/* ]]; then
-            ENV="qa"
+          IS_DISPATCH="${{ github.event_name == 'workflow_dispatch' }}"
+
+          if [[ "$IS_DISPATCH" == "true" ]]; then
+            # ── Redeploy manual: el usuario eligió el ambiente ──
+            ENV="${{ inputs.environment }}"
+            IS_REDEPLOY="true"
+            TARGET="${{ inputs.target }}"
+            APPLY_INFRA="${{ inputs.apply_infra }}"
+            RAW_TAG="${{ inputs.image_tag }}"
+            IMAGE_TAG="${RAW_TAG:-${{ github.sha }}}"
           else
-            ENV="dev"
+            # ── Push/PR: resolver ambiente desde la rama ──
+            BRANCH="${{ github.ref_name }}"
+            if [[ "$BRANCH" == "main" ]]; then
+              ENV="prod"
+            elif [[ "$BRANCH" == release/* ]]; then
+              ENV="qa"
+            else
+              ENV="dev"
+            fi
+            IS_REDEPLOY="false"
+            TARGET="both"
+            APPLY_INFRA="true"
+            IMAGE_TAG="${{ github.sha }}"
           fi
+
           echo "environment=$ENV"                              >> $GITHUB_OUTPUT
           echo "prefix=demanda-$ENV"                          >> $GITHUB_OUTPUT
           echo "s3_bucket=demanda-$ENV-frontend-145292398795" >> $GITHUB_OUTPUT
           echo "db_name=demanda_$ENV"                         >> $GITHUB_OUTPUT
-          echo "Ambiente detectado: $ENV (rama: $BRANCH)"
+          echo "is_redeploy=$IS_REDEPLOY"                     >> $GITHUB_OUTPUT
+          echo "target=$TARGET"                               >> $GITHUB_OUTPUT
+          echo "apply_infra=$APPLY_INFRA"                     >> $GITHUB_OUTPUT
+          echo "image_tag=$IMAGE_TAG"                         >> $GITHUB_OUTPUT
 
+          echo "──────────────────────────────────────────"
+          echo "  Ambiente  : $ENV"
+          echo "  Modo      : $([ "$IS_REDEPLOY" == "true" ] && echo "redeploy manual" || echo "pipeline automático")"
+          echo "  Target    : $TARGET"
+          echo "  Infra     : $APPLY_INFRA"
+          echo "  Image tag : $IMAGE_TAG"
+          echo "──────────────────────────────────────────"
+
+  # ──────────────────────────────────────────────────────────────
+  # JOB 2: Tests del backend — se salta en redeploy
+  # ──────────────────────────────────────────────────────────────
   test-backend:
     name: Test Backend
     runs-on: ubuntu-latest
     needs: set-environment
+    if: needs.set-environment.outputs.is_redeploy == 'false'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -58,10 +122,14 @@ jobs:
           npm install
           npm test --if-present
 
+  # ──────────────────────────────────────────────────────────────
+  # JOB 3: Security scan — se salta en redeploy
+  # ──────────────────────────────────────────────────────────────
   security-scan:
     name: Security Scan (Trivy)
     runs-on: ubuntu-latest
     needs: [set-environment, test-backend]
+    if: needs.set-environment.outputs.is_redeploy == 'false'
     steps:
       - uses: actions/checkout@v4
       - name: Configure AWS credentials (OIDC)
@@ -75,7 +143,7 @@ jobs:
       - name: Build image for scanning
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          PREFIX: ${{ needs.set-environment.outputs.prefix }}
+          PREFIX:       ${{ needs.set-environment.outputs.prefix }}
         run: docker build -t $ECR_REGISTRY/$PREFIX-backend:scan ./backend
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
@@ -85,10 +153,17 @@ jobs:
           exit-code: '0'
           severity: 'CRITICAL,HIGH'
 
+  # ──────────────────────────────────────────────────────────────
+  # JOB 4: Terraform Plan — se salta si apply_infra == false
+  # ──────────────────────────────────────────────────────────────
   terraform-plan:
     name: Terraform Plan (${{ needs.set-environment.outputs.environment }})
     runs-on: ubuntu-latest
     needs: [set-environment, test-backend]
+    if: |
+      always() &&
+      needs.set-environment.outputs.apply_infra == 'true' &&
+      (needs.test-backend.result == 'success' || needs.test-backend.result == 'skipped')
     steps:
       - uses: actions/checkout@v4
       - name: Configure AWS credentials (OIDC)
@@ -127,11 +202,19 @@ jobs:
             lambda/lambda.zip
           retention-days: 1
 
+  # ──────────────────────────────────────────────────────────────
+  # JOB 5a: Terraform Apply — dev / qa (automático)
+  # ──────────────────────────────────────────────────────────────
   terraform-apply:
     name: Terraform Apply (${{ needs.set-environment.outputs.environment }})
     runs-on: ubuntu-latest
     needs: [set-environment, terraform-plan, security-scan]
-    if: needs.set-environment.outputs.environment != 'prod'
+    if: |
+      always() &&
+      needs.set-environment.outputs.apply_infra == 'true' &&
+      needs.set-environment.outputs.environment != 'prod' &&
+      needs.terraform-plan.result == 'success' &&
+      (needs.security-scan.result == 'success' || needs.security-scan.result == 'skipped')
     steps:
       - uses: actions/checkout@v4
       - name: Configure AWS credentials (OIDC)
@@ -159,11 +242,19 @@ jobs:
           TF_VAR_environment: ${{ needs.set-environment.outputs.environment }}
         run: terraform apply -auto-approve tfplan
 
+  # ──────────────────────────────────────────────────────────────
+  # JOB 5b: Terraform Apply — prod (requiere aprobación manual)
+  # ──────────────────────────────────────────────────────────────
   terraform-apply-prod:
     name: Terraform Apply (prod) 🔒
     runs-on: ubuntu-latest
     needs: [set-environment, terraform-plan, security-scan]
-    if: needs.set-environment.outputs.environment == 'prod'
+    if: |
+      always() &&
+      needs.set-environment.outputs.apply_infra == 'true' &&
+      needs.set-environment.outputs.environment == 'prod' &&
+      needs.terraform-plan.result == 'success' &&
+      (needs.security-scan.result == 'success' || needs.security-scan.result == 'skipped')
     environment: production
     steps:
       - uses: actions/checkout@v4
@@ -192,11 +283,24 @@ jobs:
           TF_VAR_environment: prod
         run: terraform apply -auto-approve tfplan
 
+  # ──────────────────────────────────────────────────────────────
+  # JOB 6: Build & Push ECR
+  # En redeploy: verifica si el tag ya existe antes de reconstruir
+  # ──────────────────────────────────────────────────────────────
   build-push-ecr:
     name: Build & Push ECR (${{ needs.set-environment.outputs.environment }})
     runs-on: ubuntu-latest
-    needs: [set-environment, terraform-apply, terraform-apply-prod]
-    if: always() && (needs.terraform-apply.result == 'success' || needs.terraform-apply-prod.result == 'success')
+    needs: [set-environment, terraform-apply, terraform-apply-prod, security-scan]
+    if: |
+      always() &&
+      (needs.set-environment.outputs.target == 'both' || needs.set-environment.outputs.target == 'backend') &&
+      (
+        needs.terraform-apply.result == 'success' ||
+        needs.terraform-apply-prod.result == 'success' ||
+        (needs.set-environment.outputs.apply_infra == 'false' &&
+         needs.terraform-apply.result == 'skipped' &&
+         needs.terraform-apply-prod.result == 'skipped')
+      )
     steps:
       - uses: actions/checkout@v4
       - name: Configure AWS credentials (OIDC)
@@ -207,24 +311,62 @@ jobs:
       - name: Login to ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
-      - name: Build and push
+
+      - name: Check if image tag already exists in ECR
+        id: check-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           PREFIX:       ${{ needs.set-environment.outputs.prefix }}
-          IMAGE_TAG:    ${{ github.sha }}
+          IMAGE_TAG:    ${{ needs.set-environment.outputs.image_tag }}
+        run: |
+          if docker manifest inspect $ECR_REGISTRY/$PREFIX-backend:$IMAGE_TAG > /dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "✅ Imagen $IMAGE_TAG ya existe en ECR — se omite el build"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "🔨 Imagen $IMAGE_TAG no encontrada — se construirá"
+          fi
+
+      - name: Build and push (solo si no existe)
+        if: steps.check-image.outputs.exists == 'false'
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          PREFIX:       ${{ needs.set-environment.outputs.prefix }}
+          IMAGE_TAG:    ${{ needs.set-environment.outputs.image_tag }}
         run: |
           docker build -t $ECR_REGISTRY/$PREFIX-backend:$IMAGE_TAG ./backend
           docker push $ECR_REGISTRY/$PREFIX-backend:$IMAGE_TAG
+          echo "✅ Imagen publicada: $ECR_REGISTRY/$PREFIX-backend:$IMAGE_TAG"
+
+      - name: Update latest tag
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          PREFIX:       ${{ needs.set-environment.outputs.prefix }}
+          IMAGE_TAG:    ${{ needs.set-environment.outputs.image_tag }}
+        run: |
+          docker pull $ECR_REGISTRY/$PREFIX-backend:$IMAGE_TAG
           docker tag  $ECR_REGISTRY/$PREFIX-backend:$IMAGE_TAG \
                       $ECR_REGISTRY/$PREFIX-backend:latest
           docker push $ECR_REGISTRY/$PREFIX-backend:latest
-          echo "Imagen publicada: $ECR_REGISTRY/$PREFIX-backend:$IMAGE_TAG"
+          echo "🏷️  Tag latest actualizado → $IMAGE_TAG"
 
+  # ──────────────────────────────────────────────────────────────
+  # JOB 7: Deploy Frontend — salta si target == backend
+  # ──────────────────────────────────────────────────────────────
   deploy-frontend:
     name: Deploy Frontend (${{ needs.set-environment.outputs.environment }})
     runs-on: ubuntu-latest
     needs: [set-environment, terraform-apply, terraform-apply-prod]
-    if: always() && (needs.terraform-apply.result == 'success' || needs.terraform-apply-prod.result == 'success')
+    if: |
+      always() &&
+      needs.set-environment.outputs.target != 'backend' &&
+      (
+        needs.terraform-apply.result == 'success' ||
+        needs.terraform-apply-prod.result == 'success' ||
+        (needs.set-environment.outputs.apply_infra == 'false' &&
+         needs.terraform-apply.result == 'skipped' &&
+         needs.terraform-apply-prod.result == 'skipped')
+      )
     steps:
       - uses: actions/checkout@v4
       - name: Configure AWS credentials (OIDC)
@@ -246,12 +388,18 @@ jobs:
           npm run build
       - name: Deploy to S3
         run: |
-          aws s3 sync frontend/build/ s3://${{ needs.set-environment.outputs.s3_bucket }} --delete
-          echo "Frontend desplegado en s3://${{ needs.set-environment.outputs.s3_bucket }}"
+          aws s3 sync frontend/build/ \
+            s3://${{ needs.set-environment.outputs.s3_bucket }} --delete
+          echo "✅ Frontend desplegado en s3://${{ needs.set-environment.outputs.s3_bucket }}"
       - name: Invalidate CloudFront
         run: |
           CF_ID=$(aws cloudfront list-distributions \
             --query "DistributionList.Items[?Comment=='Demanda ${{ needs.set-environment.outputs.environment }} Frontend'].Id" \
             --output text)
-          aws cloudfront create-invalidation --distribution-id $CF_ID --paths "/*"
-          echo "Cache invalidado en CloudFront: $CF_ID"
+          if [[ -z "$CF_ID" || "$CF_ID" == "None" ]]; then
+            echo "⚠️  No se encontró distribución CloudFront — se omite invalidación"
+            exit 0
+          fi
+          aws cloudfront create-invalidation \
+            --distribution-id $CF_ID --paths "/*"
+          echo "✅ Cache invalidado en CloudFront: $CF_ID"
