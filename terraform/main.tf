@@ -227,7 +227,3 @@ resource "aws_cloudfront_distribution" "frontend" {
 }
 
 
-import {
-  to = aws_s3_bucket.frontend
-  id = "demanda-qa-frontend-145292398795"
-}
