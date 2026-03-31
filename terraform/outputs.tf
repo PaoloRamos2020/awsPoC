@@ -18,6 +18,11 @@ output "ecs_cluster_name" {
   value       = aws_ecs_cluster.main.name
 }
 
+output "ecs_service_name" {
+  description = "Nombre del ECS Service del backend"
+  value       = aws_ecs_service.backend.name
+}
+
 output "frontend_url" {
   description = "CloudFront URL del frontend"
   value       = "https://${aws_cloudfront_distribution.frontend.domain_name}"
