@@ -26,8 +26,8 @@ variable "db_password" {
   default     = ""
 }
 
-variable "db_host" {
-  description = "RDS host — requerido en qa y prod (referencian el RDS compartido de dev)"
+variable "rds_host" {
+  description = "RDS endpoint para qa y prod (referencia la instancia compartida de dev)"
   type        = string
   default     = ""
 }
